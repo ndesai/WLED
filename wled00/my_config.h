@@ -29,3 +29,8 @@
 #define CLIENT_SSID "wifi"
 #define CLIENT_PASS ""
 #define MDNS_NAME SERVERNAME
+
+#define HW_PIN_SCL 5
+#define HW_PIN_SDA 4
+#define I2CSDAPIN HW_PIN_SDA
+#define I2CSCLPIN HW_PIN_SCL
