@@ -41,6 +41,18 @@ class UsermodVL53L0XGestures : public Usermod {
     //Private class members. You can declare variables and functions only accessible to your usermod here
     unsigned long lastTime = 0;
     VL53L0X sensor;
+
+    //
+    VL53L0X sensorBottomOfStairs;
+    VL53L0X sensorTopOfStairs;
+
+    static const uint8_t sensorCount = 2;
+    VL53L0X sensors[sensorCount] = { sensorBottomOfStairs, sensorTopOfStairs };
+
+    // The Arduino pin connected to the XSHUT pin of each sensor.
+    const uint8_t xshutPins[sensorCount] = { D5, D6 };
+    //
+
     bool enabled = true;
 
     bool wasMotionBefore = false;
@@ -50,7 +62,10 @@ class UsermodVL53L0XGestures : public Usermod {
   public:
 
     void setup() {
-      if (i2c_scl<0 || i2c_sda<0) { enabled = false; return; }
+      if (i2c_scl < 0 || i2c_sda < 0) {
+        enabled = false;
+        return;
+      }
 
       sensor.setTimeout(150);
       if (!sensor.init())
@@ -59,14 +74,64 @@ class UsermodVL53L0XGestures : public Usermod {
       } else {
         sensor.setMeasurementTimingBudget(20000); // set high speed mode
       }
+
+      //
+      // Disable/reset all sensors by driving their XSHUT pins low.
+      for (uint8_t i = 0; i < sensorCount; i++)
+      {
+        pinMode(xshutPins[i], OUTPUT);
+        digitalWrite(xshutPins[i], LOW);
+      }
+
+      // Enable, initialize, and start each sensor, one by one.
+      for (uint8_t i = 0; i < sensorCount; i++)
+      {
+        // Stop driving this sensor's XSHUT low. This should allow the carrier
+        // board to pull it high. (We do NOT want to drive XSHUT high since it is
+        // not level shifted.) Then wait a bit for the sensor to start up.
+        pinMode(xshutPins[i], INPUT);
+        delay(10);
+
+        sensors[i].setTimeout(500);
+        if (!sensors[i].init())
+        {
+          DEBUG_PRINTLN(F("Failed to detect and initialize sensor "));
+          DEBUG_PRINTLN(i);
+          while (1);
+        }
+
+        // Each sensor must have its address changed to a unique value other than
+        // the default of 0x29 (except for the last one, which could be left at
+        // the default). To make it simple, we'll just count up from 0x2A.
+        sensors[i].setAddress(0x2A + i);
+
+        sensors[i].startContinuous();
+      }
     }
 
 
     void loop() {
       if (!enabled || strip.isUpdating()) return;
+
+      //
+      for (uint8_t i = 0; i < sensorCount; i++)
+      {
+        DEBUG_PRINTF("range: %d", sensors[i].readRangeSingleMillimeters());
+        if (sensors[i].timeoutOccurred()) {
+          DEBUG_PRINTLN(" TIMEOUT");
+        }
+      }
+      //
+
+
       if (millis() - lastTime > VL53L0X_DELAY_MS)
       {
         lastTime = millis();
+
+        if (sensor.last_status == 4) {
+          DEBUG_PRINTF("out of range");
+          return;
+        }
 
         int range = sensor.readRangeSingleMillimeters();
         DEBUG_PRINTF("range: %d, brightness: %d\r\n", range, bri);
@@ -110,13 +175,13 @@ class UsermodVL53L0XGestures : public Usermod {
      * It will be called by WLED when settings are actually saved (for example, LED settings are saved)
      * I highly recommend checking out the basics of ArduinoJson serialization and deserialization in order to use custom settings!
      */
-//    void addToConfig(JsonObject& root)
-//    {
-//      JsonObject top = root.createNestedObject("VL53L0x");
-//      JsonArray pins = top.createNestedArray("pin");
-//      pins.add(i2c_scl);
-//      pins.add(i2c_sda);
-//    }
+    void addToConfig(JsonObject& root)
+    {
+      JsonObject top = root.createNestedObject("VL53L0x");
+      JsonArray pins = top.createNestedArray("pin");
+      pins.add(i2c_scl);
+      pins.add(i2c_sda);
+    }
 
     /*
      * getId() allows you to optionally give your V2 usermod an unique ID (please define it in const.h!).
