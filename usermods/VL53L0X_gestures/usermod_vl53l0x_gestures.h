@@ -22,6 +22,8 @@
 // NOTE: Adafruit VL53L0X driver not used as it consumes more RAM than available on a D1 Mini
 #include <VL53L0X.h>
 
+#define BREAKBEAM_LOGIC_ENABLED
+
 // Break sensor
 // Sensor Alpha
 // Sensor Beta
@@ -62,12 +64,15 @@ private:
   // The pin connected to the XSHUT pin of each sensor.
   const uint8_t xshutPins[sensorCount] = {D5, D6};
 
+#ifndef BREAKBEAM_LOGIC_ENABLED
   bool wasMotionBefore = false;
   bool isLongMotion = false;
   unsigned long motionStartTime = 0;
+#endif
 
   // True when user is between sensor1 and sensor2
-  static bool userWithinSensorRegion;
+  bool userWithinSensorRegion;
+  unsigned long userEnteredSensorRegionTime = 0;
 
 public:
   // strings to reduce flash memory usage (used more than twice)
@@ -96,6 +101,12 @@ public:
    * This could be used in the future for the system to determine whether your usermod is installed.
    */
   uint16_t getId() override { return USERMOD_ID_VL53L0X; }
+
+  /*
+   * Use ntp time and prescribed sunrise/sunset timings to determine whether
+   * it is day time.
+   */
+  static bool isDayTime();
 };
 
 void UsermodVL53L0XGestures::setup()
@@ -156,8 +167,88 @@ void UsermodVL53L0XGestures::loop()
   if (millis() - lastTime > VL53L0X_DELAY_MS)
   {
     lastTime = millis();
-    //
 
+#ifdef BREAKBEAM_LOGIC_ENABLED
+    int range1 = sensor1.readRangeSingleMillimeters();
+    int range2 = sensor2.readRangeSingleMillimeters();
+
+    // User can walk from "Outside" to "Region", thereby breaking
+    // the beam.  The user can walk in either direction.
+
+    // Outside -----------------------------
+    // Beam    +---------------------------+
+    // Region  +++++++++++++++++++++++++=+++
+    // Region  +++++++++++++++++++++++++=+++
+    // Region  +++++++++++++++++++++++++=+++
+    // Region  +++++++++++++++++++++++++=+++
+    // Region  +++++++++++++++++++++++++=+++
+    // Beam    +---------------------------+
+    // Outside -----------------------------
+
+    // TODO: ND - Handle the case where multiple users can be walking
+    // in the same direction
+    // TODO: ND - Handle the case where multiple users can be walking
+    // in the opposite direction
+    // TODO: Keep track of how many users are within the region
+    // TODO: Keep track of users who backtrack, e.g. break one beam and regress through the same beam
+
+    if (range1 < VL53L0X_MAX_RANGE_MM)
+    {
+      // User is passing sensor1
+      // Either entering the sensor region or exiting it
+      if (userWithinSensorRegion)
+      {
+        userWithinSensorRegion = false;
+      }
+      else
+      {
+        userWithinSensorRegion = true;
+        userEnteredSensorRegionTime = millis();
+      }
+    }
+
+    if (range2 < VL53L0X_MAX_RANGE_MM)
+    {
+      // User is passing sensor2
+      // Either entering the sensor region or exiting it
+      if (userWithinSensorRegion)
+      {
+        userWithinSensorRegion = false;
+      }
+      else
+      {
+        userWithinSensorRegion = true;
+        userEnteredSensorRegionTime = millis();
+      }
+    }
+
+    // Timeout a userWithinSensorRegion after 5 minutes
+    if (millis() > (userEnteredSensorRegionTime + 5 * (60 * 1000)))
+    {
+      // Timed out
+      userWithinSensorRegion = false;
+    }
+
+    if (userWithinSensorRegion)
+    {
+      bri = (uint8_t) 1.0 * 255;
+    }
+    else
+    {
+      if (isDayTime())
+      {
+         bri = 0;
+      }
+      else
+      {
+        // 10% brightness
+        bri = (uint8_t) 0.10 * 255;
+      }
+    }
+    stateUpdated(1);
+    DEBUG_PRINTF("brightness updated (userWithinSensorRegion = %d): %d\r\n", userWithinSensorRegion, bri);
+
+#else
     for (uint8_t i = 0; i < sensorCount; i++)
     {
       int range = sensors[i].readRangeSingleMillimeters();
@@ -180,12 +271,15 @@ void UsermodVL53L0XGestures::loop()
         DEBUG_PRINTLN(" TIMEOUT");
       }
     }
+#endif
   }
 }
 
 void UsermodVL53L0XGestures::addToConfig(JsonObject &root)
 {
-  JsonObject top = root.createNestedObject("VL53L0x");
+  JsonObject top = root.createNestedObject(FPSTR(_name));
+  top[FPSTR(_enabled)] = enabled;
+
   JsonArray pins = top.createNestedArray("pin");
   pins.add(i2c_scl);
   pins.add(i2c_sda);
@@ -196,11 +290,39 @@ bool UsermodVL53L0XGestures::readFromConfig(JsonObject &root)
   JsonObject top = root[FPSTR(_name)];
   if (top.isNull())
   {
-    DEBUG_PRINTLN(F(": No config found. (Using defaults.)"));
+    DEBUG_PRINTLN(F("No config found. (Using defaults)"));
     return false;
   }
   enabled = top[FPSTR(_enabled)] | enabled;
   return true;
+}
+
+// https://github.com/Aircoookie/WLED/blob/main/usermods/PIR_sensor_switch/usermod_PIR_sensor_switch.h#L200
+bool UsermodVL53L0XGestures::isDayTime()
+{
+  updateLocalTime();
+  uint8_t hr = hour(localTime);
+  uint8_t mi = minute(localTime);
+
+  if (sunrise && sunset)
+  {
+    if (hour(sunrise) < hr && hour(sunset) > hr)
+    {
+      return true;
+    }
+    else
+    {
+      if (hour(sunrise) == hr && minute(sunrise) < mi)
+      {
+        return true;
+      }
+      if (hour(sunset) == hr && minute(sunset) > mi)
+      {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // https://github.com/Aircoookie/WLED/blob/main/usermods/Temperature/usermod_temperature.h
