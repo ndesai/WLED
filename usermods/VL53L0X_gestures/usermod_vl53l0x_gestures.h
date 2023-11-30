@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include <string>
+#include <sstream>
 #include <Wire.h>
 #include <wled.h>
 #include <FX.h>
@@ -47,6 +49,9 @@
 
 #define SAMPLING_FREQUENCY_MS 100
 
+#define LOG(x) \
+  DEBUG_PRINTF("UM: %s\r\n", x)
+
 class UsermodVL53L0XGestures : public Usermod
 {
 private:
@@ -58,11 +63,12 @@ private:
   VL53L0X sensor1;
   VL53L0X sensor2;
 
-  static const uint8_t sensorCount = 2;
-  VL53L0X sensors[sensorCount] = {sensor1, sensor2};
+  static const uint8_t sensorCount = 1;
+  VL53L0X sensors[sensorCount] = {sensor1 };
 
   // The pin connected to the XSHUT pin of each sensor.
-  const uint8_t xshutPins[sensorCount] = {D5, D6};
+  // const uint8_t xshutPins[sensorCount] = {D5, D6};
+  const uint8_t xshutPins[sensorCount] = {D6};
 
 #ifndef BREAKBEAM_LOGIC_ENABLED
   bool wasMotionBefore = false;
@@ -73,6 +79,7 @@ private:
   // True when user is between sensor1 and sensor2
   bool userWithinSensorRegion;
   unsigned long userEnteredSensorRegionTime = 0;
+  uint8_t userCount = 0;
 
 public:
   // strings to reduce flash memory usage (used more than twice)
@@ -81,6 +88,15 @@ public:
 
   void setup() override;
   void loop() override;
+
+  /*
+   * Disable usermod
+   */
+  void disableUsermod(const char* errorMessage)
+  {
+    DEBUG_PRINTF("UM: Disabling usermod: %s\r\n", errorMessage);
+    enabled = false;
+  }
 
   /*
    * addToConfig() can be used to add custom persistent settings to the cfg.json file in the "um" (usermod) object.
@@ -114,7 +130,7 @@ void UsermodVL53L0XGestures::setup()
   // i2c pin configuration not set, cannot enable usermod
   if (i2c_scl < 0 || i2c_sda < 0)
   {
-    enabled = false;
+    disableUsermod("i2c clock/data not set, disabling usermod");
     return;
   }
 
@@ -143,16 +159,24 @@ void UsermodVL53L0XGestures::setup()
     sensors[i].setTimeout(500);
     if (!sensors[i].init())
     {
-      DEBUG_PRINTF("Failed to detect and initialize sensor %d\r\n", i);
-      while (1)
-        ; // Wait for timeout
+      // std::ostringstream stream;
+      // stream << "Failed to detect and initialize sensor";
+      // stream << i;
+      // disableUsermod(stream.str().c_str());
+      // return;
+      DEBUG_PRINTLN(F("Failed to detect and initialize sensor "));
+      while (1);
     }
+
+    DEBUG_PRINTF("UM: sensor %d initialized\r\n", i);
 
     // Each sensor must have its address changed to a unique value other than
     // the default of 0x29 (except for the last one, which could be left at
     // the default). To make it simple, we'll just count up from 0x2A.
     sensors[i].setAddress(0x2A + i);
+    DEBUG_PRINTF("UM: sensor %d address: %d\r\n", i, sensors[i].getAddress());
     sensors[i].setMeasurementTimingBudget(SAMPLING_FREQUENCY_MS * 1000);
+    sensors[i].startContinuous(50);
   }
 }
 
@@ -168,9 +192,16 @@ void UsermodVL53L0XGestures::loop()
   {
     lastTime = millis();
 
+    LOG("loop");
+
 #ifdef BREAKBEAM_LOGIC_ENABLED
     int range1 = sensor1.readRangeSingleMillimeters();
-    int range2 = sensor2.readRangeSingleMillimeters();
+    // int range2 = sensor2.readRangeSingleMillimeters();
+    // int range1 = sensor1.readRangeContinuousMillimeters();
+    // int range2 = sensor2.readRangeContinuousMillimeters();
+    int range2 = 666;
+
+    DEBUG_PRINTF("range1: %d ---- range2: %d\r\n", range1, range2);
 
     // User can walk from "Outside" to "Region", thereby breaking
     // the beam.  The user can walk in either direction.
@@ -198,12 +229,16 @@ void UsermodVL53L0XGestures::loop()
       // Either entering the sensor region or exiting it
       if (userWithinSensorRegion)
       {
-        userWithinSensorRegion = false;
+        if (userCount == 1) {
+          userWithinSensorRegion = false;
+        }
+        userCount--;
       }
       else
       {
         userWithinSensorRegion = true;
         userEnteredSensorRegionTime = millis();
+        userCount++;
       }
     }
 
@@ -213,12 +248,16 @@ void UsermodVL53L0XGestures::loop()
       // Either entering the sensor region or exiting it
       if (userWithinSensorRegion)
       {
-        userWithinSensorRegion = false;
+        if (userCount == 1) {
+          userWithinSensorRegion = false;
+        }
+        userCount--;
       }
       else
       {
         userWithinSensorRegion = true;
         userEnteredSensorRegionTime = millis();
+        userCount++;
       }
     }
 
@@ -246,7 +285,7 @@ void UsermodVL53L0XGestures::loop()
       }
     }
     stateUpdated(1);
-    DEBUG_PRINTF("brightness updated (userWithinSensorRegion = %d): %d\r\n", userWithinSensorRegion, bri);
+    DEBUG_PRINTF("UM: brightness updated (userWithinSensorRegion = %d): %d\r\n", userWithinSensorRegion, bri);
 
 #else
     for (uint8_t i = 0; i < sensorCount; i++)
@@ -290,7 +329,7 @@ bool UsermodVL53L0XGestures::readFromConfig(JsonObject &root)
   JsonObject top = root[FPSTR(_name)];
   if (top.isNull())
   {
-    DEBUG_PRINTLN(F("No config found. (Using defaults)"));
+    LOG("No config found. (Using defaults)");
     return false;
   }
   enabled = top[FPSTR(_enabled)] | enabled;

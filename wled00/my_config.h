@@ -28,6 +28,8 @@
 #define SERVERNAME "stairs"
 #define CLIENT_SSID "wifi"
 #define CLIENT_PASS ""
+#define WLED_AP_SSID "wled_stairs"
+#define WLED_AP_PASS ""
 #define MDNS_NAME SERVERNAME
 
 #define I2CSDAPIN 4
